@@ -13,7 +13,17 @@ import {
     Save,
     X
 } from 'lucide-react';
-// Removed static initialData import for dynamic Excel linking
+import {
+    db,
+    collection,
+    addDoc,
+    updateDoc,
+    deleteDoc,
+    doc,
+    onSnapshot,
+    query,
+    orderBy
+} from './firebase';
 
 const getStatusStyles = (status, excelColor, excelFontColor) => {
     const s = status.toLowerCase();
@@ -66,78 +76,82 @@ const getStatusStyles = (status, excelColor, excelFontColor) => {
 
 const App = () => {
     const [papers, setPapers] = useState([]);
-    const [researcher, setResearcher] = useState({
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [researcher] = useState({
         name: "Dr. DHIBIN VIKASH K P",
         credentials: "B.S., MBBS.",
-        guide: "",
-        guideCredentials: ""
+        guide: "Dr. SATISH MUTHU",
+        guideCredentials: "MBBS., MS (Ortho)., DNB (Ortho)., MNAMS., FISS (Spine Surg)., FESS (Spine Endoscopy)., FIRM (Regen Med)., FEIORA (Orth Rheumatology)., PhD"
     });
     const [searchTerm, setSearchTerm] = useState("");
     const [editingPaper, setEditingPaper] = useState(null);
     const [isAddingMode, setIsAddingMode] = useState(false);
     const [newPaper, setNewPaper] = useState({ title: "", status: "" });
 
-    const API_BASE = window.location.hostname === 'localhost' ? 'http://localhost:3001' : '';
-
-    const fetchData = async () => {
-        try {
-            const response = await fetch(`${API_BASE}/api/data`);
-            const data = await response.json();
-            setPapers(data.papers);
-            setResearcher(data.researcher);
-        } catch (error) {
-            console.error("Failed to fetch data:", error);
-        }
-    };
-
     useEffect(() => {
-        fetchData();
+        setLoading(true);
+        const q = query(collection(db, "papers"), orderBy("id", "asc"));
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            const papersData = [];
+            querySnapshot.forEach((doc) => {
+                papersData.push({ ...doc.data(), firestoreId: doc.id });
+            });
+            setPapers(papersData);
+            setLoading(false);
+            setError(null);
+        }, (err) => {
+            console.error("Firestore error:", err);
+            setError(`Firebase Error: ${err.message}. Check if Firestore is enabled and rules allow public access.`);
+            setLoading(false);
+        });
+
+        return () => unsubscribe();
     }, []);
 
-    const saveToExcel = async (updatedPapers) => {
+    const handleDelete = async (firestoreId) => {
         try {
-            await fetch(`${API_BASE}/api/update`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ papers: updatedPapers })
-            });
-            fetchData(); // Refresh data to get correct colors from Excel
+            await deleteDoc(doc(db, "papers", firestoreId));
         } catch (error) {
-            console.error("Failed to save data:", error);
+            console.error("Failed to delete paper:", error);
         }
-    };
-
-    const handleDelete = (id) => {
-        const updated = papers.filter(p => p.id !== id);
-        setPapers(updated);
-        saveToExcel(updated);
     };
 
     const handleEdit = (paper) => {
         setEditingPaper({ ...paper });
     };
 
-    const handleSaveEdit = () => {
-        const updated = papers.map(p => p.id === editingPaper.id ? editingPaper : p);
-        setPapers(updated);
-        saveToExcel(updated);
-        setEditingPaper(null);
+    const handleSaveEdit = async () => {
+        try {
+            const { firestoreId, ...paperData } = editingPaper;
+            await updateDoc(doc(db, "papers", firestoreId), paperData);
+            setEditingPaper(null);
+        } catch (error) {
+            console.error("Failed to update paper:", error);
+        }
     };
 
-    const handleAddPaper = () => {
+    const handleAddPaper = async () => {
         if (newPaper.title.trim()) {
-            const newId = papers.length > 0 ? Math.max(...papers.map(p => p.id)) + 1 : 1;
-            const updated = [...papers, { id: newId, ...newPaper }];
-            setPapers(updated);
-            saveToExcel(updated);
-            setNewPaper({ title: "", status: "" });
-            setIsAddingMode(false);
+            try {
+                const nextId = papers.length > 0 ? Math.max(...papers.map(p => p.id)) + 1 : 1;
+                await addDoc(collection(db, "papers"), {
+                    id: nextId,
+                    title: newPaper.title,
+                    status: newPaper.status || "Yet to start",
+                    highlight: false
+                });
+                setNewPaper({ title: "", status: "" });
+                setIsAddingMode(false);
+            } catch (error) {
+                console.error("Failed to add paper:", error);
+            }
         }
     };
 
     const filteredPapers = papers.filter(p =>
-        p.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        p.status.toLowerCase().includes(searchTerm.toLowerCase())
+        p.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.status?.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
     return (
@@ -161,6 +175,29 @@ const App = () => {
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', maxWidth: '300px' }}>{researcher.guideCredentials}</p>
                 </div>
             </motion.header>
+
+            {/* Error Message */}
+            {error && (
+                <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={{
+                        background: 'rgba(255, 77, 77, 0.15)',
+                        border: '1px solid #ff4d4d',
+                        color: '#ff4d4d',
+                        padding: '1rem',
+                        borderRadius: '8px',
+                        marginBottom: '2rem',
+                        fontSize: '0.9rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem'
+                    }}
+                >
+                    <X size={18} />
+                    {error}
+                </motion.div>
+            )}
 
             {/* Main Grid */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2rem' }}>
@@ -191,7 +228,6 @@ const App = () => {
                             </div>
                         </div>
                     </motion.div>
-                    {/* Add more stat cards as needed */}
                 </div>
 
                 {/* Action Bar */}
@@ -231,7 +267,7 @@ const App = () => {
                                 <AnimatePresence>
                                     {filteredPapers.map((paper, index) => (
                                         <motion.tr
-                                            key={paper.id}
+                                            key={paper.firestoreId}
                                             initial={{ opacity: 0, x: -20 }}
                                             animate={{ opacity: 1, x: 0 }}
                                             exit={{ opacity: 0, scale: 0.95 }}
@@ -266,7 +302,7 @@ const App = () => {
                                                         <Edit3 size={16} />
                                                     </button>
                                                     <button
-                                                        onClick={() => handleDelete(paper.id)}
+                                                        onClick={() => handleDelete(paper.firestoreId)}
                                                         style={{ background: 'transparent', border: 'none', color: '#ff4d4d', cursor: 'pointer', padding: '0.5rem' }}
                                                     >
                                                         <Trash2 size={16} />
